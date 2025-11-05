@@ -101,6 +101,7 @@ class QuantMlp(nn.Module):
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         drop_probs = to_2tuple(drop)
+
         self.wbits = wbits
         self.abits = abits
 
@@ -108,13 +109,14 @@ class QuantMlp(nn.Module):
                                offset=offset, input_noise_std=input_noise_std, output_noise_std=output_noise_std, phase_noise_std=phase_noise_std,
                                enable_wdm_noise=enable_wdm_noise, num_wavelength=num_wavelength, channel_spacing=channel_spacing,
                                enable_linear_noise=enable_linear_noise) if wbits <= 16 else nn.Linear(in_features, hidden_features)
-        self.act = act_layer(inplace=True) if isinstance(
-            act_layer, nn.ReLU) else act_layer()
+
+        self.act = act_layer(inplace=True) if isinstance(act_layer, nn.ReLU) else act_layer()
         
         self.fc2 = QuantLinear(hidden_features, out_features, nbits=wbits, nbits_a=abits, mode=Qmodes.layer_wise,
                                offset=offset, input_noise_std=input_noise_std, output_noise_std=output_noise_std, phase_noise_std=phase_noise_std,
                                enable_wdm_noise=enable_wdm_noise, num_wavelength=num_wavelength, channel_spacing=channel_spacing,
                                enable_linear_noise=enable_linear_noise) if wbits <= 16 else nn.Linear(hidden_features, out_features)
+                               
         self.drop1 = nn.Dropout(drop_probs[0])
         self.drop2 = nn.Dropout(drop_probs[1])
 
@@ -135,13 +137,14 @@ class QuantAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
-        self.scale = head_dim ** -0.5
+        self.scale = head_dim ** -0.5  # 1 / sqrt(head_dim)
         self.input_noise_std = input_noise_std
         self.output_noise_std = output_noise_std
         self.phase_noise_std = phase_noise_std
         self.kappa_noise = None if not enable_wdm_noise else cal_coupler_wdm_error_list(
             num_wavelength=num_wavelength, channel_spacing=channel_spacing)
         self.num_wavelength = num_wavelength
+
         # original version
         # self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         # self.attn_drop = nn.Dropout(attn_drop)
@@ -176,6 +179,7 @@ class QuantAttention(nn.Module):
                                 offset=offset,  input_noise_std=input_noise_std, output_noise_std=output_noise_std, phase_noise_std=phase_noise_std,
                                 enable_wdm_noise=enable_wdm_noise, num_wavelength=num_wavelength, channel_spacing=channel_spacing,
                                 enable_linear_noise=enable_linear_noise) if wbits <= 16 else nn.Linear(dim, dim)
+
         self.proj_drop = nn.Dropout(proj_drop)
 
     def add_output_noise(self, x):
@@ -197,17 +201,19 @@ class QuantAttention(nn.Module):
 
     def forward(self, x):
         kappa_noise_scale_factor = 2
-        B, N, C = x.shape
-        D = C // self.num_heads
+        B, N, C = x.shape  # B: batch size, N: number of tokens, C: embedding dimension
+        D = C // self.num_heads # dimension per head
         
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C //
-                                  self.num_heads).permute(2, 0, 3, 1, 4)
+        # After qkv projection, the shape of x is (B, N, 3 * C)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, D).permute(2, 0, 3, 1, 4)
 
+        # Each of q, k, v has the shape (B, num_heads, N, D)
         q, k, v = qkv.unbind(0)
 
         # quant@q,k,v -> attn computation (no quant) -> quant@attn
         # quant(softmax(quant_q * quant_k))* quant(v)
         if self.quant_q is not None:
+            # perform input quantization
             q, k, v = self.quant_q(q), self.quant_k(k), self.quant_v(v)
         
         # enable WDM dispersion noise only during inference
@@ -235,11 +241,12 @@ class QuantAttention(nn.Module):
                     q, noise_std=self.phase_noise_std), k[:, :, :, i].unsqueeze(-1)).squeeze(-1)
             attn = (attn + (noise_q_2 + noise_k_2)) * self.scale
         else:
-            attn = ((q @ k.transpose(-2, -1))) * self.scale
+            attn = ((q @ k.transpose(-2, -1))) * self.scale # Q @ K^T / sqrt(d)
 
         # no matter where to put scale, since we have a multiplicative noise wrt. value
         if self.output_noise_std > 1e-5:
             attn = self.add_output_noise(attn)
+
         attn = self.quant_attn(attn)
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
@@ -260,19 +267,21 @@ class QuantAttention(nn.Module):
                 ), kappa_noise_term.unsqueeze(-1)) / (alpha_attn_to_v * kappa_noise_scale_factor)  # bs, head, token, 1
                 noise_v_2 = torch.matmul(v.square().transpose(-2, -1), -kappa_noise_term.unsqueeze(-1)).transpose(
                     -2, -1) * (alpha_attn_to_v / kappa_noise_scale_factor)  # bs, head, 1, dim
-            x = torch.empty(B, self.num_heads, N, C //
-                            self.num_heads, dtype=torch.float32, device=q.device)
-            for i in range(C // self.num_heads):
+            x = torch.empty(B, self.num_heads, N, D, dtype=torch.float32, device=q.device)
+            for i in range(D):
                 x[:, :, :, i] = torch.matmul(self.add_phase_noise(
                     attn, noise_std=self.phase_noise_std), v[:, :, :, i].unsqueeze(-1)).squeeze(-1)
             x = x + (noise_attn_2 + noise_v_2)  # add dispersion noise
             x = x.transpose(1, 2).reshape(B, N, C)
         else:
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+
         if self.output_noise_std > 1e-5:
             x = self.add_output_noise(x)
+
         x = self.proj(x)
         x = self.proj_drop(x)
+
         return x
 
 
@@ -302,6 +311,7 @@ class QuantBlock(nn.Module):
                             enable_linear_noise=enable_linear_noise)
 
     def forward(self, x):
+        # With residual connection
         x = x + self.drop_path(self.attn(self.norm1(x)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
@@ -322,17 +332,20 @@ class QuantPatchEmbed(nn.Module):
         self.patch_size = patch_size
         self.num_patches = num_patches
 
+        # using quant convolution layer to perform linear transformation on each patch
         self.proj = QuantConv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, nbits=nbits, nbits_a=nbits, mode=Qmodes.layer_wise, offset=offset,
                                 input_noise_std=input_noise_std, output_noise_std=output_noise_std, phase_noise_std=phase_noise_std,
                                 enable_wdm_noise=enable_wdm_noise, num_wavelength=num_wavelength, channel_spacing=channel_spacing,
                                 enable_linear_noise=enable_linear_noise)
 
     def forward(self, x):
+        # (Batch, Channel, Height, Width)
         B, C, H, W = x.shape
         # FIXME look at relaxing size constraints
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
         x = self.proj(x).flatten(2).transpose(1, 2)
+        # After flatten: (B, D, N) -> transpose -> (B, N, D). N is the number of patches.
         return x
 
 
@@ -449,6 +462,7 @@ class QuantVisionTransformer(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         if act_layer == nn.ReLU:
             print('using relu nonlinearity')
+
         self.blocks = nn.ModuleList([
             QuantBlock(
                 wbits=wbits, abits=abits,
@@ -458,6 +472,7 @@ class QuantVisionTransformer(nn.Module):
                 headwise=headwise, input_noise_std=input_noise_std, output_noise_std=output_noise_std, phase_noise_std=phase_noise_std,
                 enable_wdm_noise=enable_wdm_noise, num_wavelength=num_wavelength, channel_spacing=channel_spacing, offset=offset, enable_linear_noise=enable_linear_noise)
             for i in range(depth)])
+
         self.norm = norm_layer(embed_dim)
 
         # NOTE as per official impl, we could have a pre-logits representation dense layer + tanh here
@@ -525,8 +540,8 @@ class QuantVisionTransformer(nn.Module):
                 self.embed_dim, self.num_classes) if num_classes > 0 else nn.Identity()
 
     def forward_features(self, x):
-        B = x.shape[0]
-        x = self.patch_embed(x)
+        B = x.shape[0]  # Batch size
+        x = self.patch_embed(x) # Shape of x : (B, N, D)
 
         # stole cls_tokens impl from Phil Wang, thanks
         cls_token = self.cls_token.expand(B, -1, -1)
@@ -535,15 +550,17 @@ class QuantVisionTransformer(nn.Module):
         else:
             x = torch.cat((cls_token, self.dist_token.expand(
                 x.shape[0], -1, -1), x), dim=1)
+
         x = self.pos_drop(x + self.pos_embed)
-        for i, blk in enumerate(self.blocks):
-            x = blk(x)
+        # for i, blk in enumerate(self.blocks):
+        for block in self.blocks:
+            x = block(x)
         x = self.norm(x)
 
         if self.dist_token is None:
-            return self.pre_logits(x[:, 0])
+            return self.pre_logits(x[:, 0]) # return only [CLS] token
         else:
-            return x[:, 0], x[:, 1]
+            return x[:, 0], x[:, 1] # return a tuple of [CLS] token and [DIST] token
 
     def forward(self, x):
         x = self.forward_features(x)

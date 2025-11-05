@@ -108,6 +108,7 @@ class QuantConv2d(_Conv2dQ):
         # full range quantization -> -2**(k-1) -> 2**(k-1)-1
         Qn = -2 ** (self.nbits - 1)
         Qp = 2 ** (self.nbits - 1) - 1
+
         if self.init_state == 0:
             print(
                 f"Conv layer (mode: {self.q_mode}): initialize weight scale for int{self.nbits} quantization")
@@ -119,9 +120,11 @@ class QuantConv2d(_Conv2dQ):
             g = 1.0 / math.sqrt(self.weight.numel() * Qp)
 
         self.alpha.data.clamp_(min=1e-4)
+
         # Method1: 31GB GPU memory (AlexNet w4a4 bs 2048) 17min/epoch
         alpha = grad_scale(self.alpha, g)
         w_q = round_pass((self.weight / alpha).clamp(Qn, Qp)) * alpha
+
         # Method2: 25GB GPU memory (AlexNet w4a4 bs 2048) 32min/epoch
         # w_q = FunLSQ.apply(self.weight, self.alpha, g, Qn, Qp)
 
@@ -198,8 +201,10 @@ class QuantLinear(_LinearQ):
         
         if self.alpha is None:
             return F.linear(x, self.weight, self.bias)
+
         Qn = -2 ** (self.nbits - 1)
         Qp = 2 ** (self.nbits - 1) - 1
+        
         if self.init_state == 0:
             print(
                 f"Linear layer (mode: {self.q_mode}): initialize weight scale for int{self.nbits} quantization")
@@ -209,11 +214,14 @@ class QuantLinear(_LinearQ):
             # m, v = self.weight.abs().mean(), self.weight.abs().std()
             # self.alpha.data.copy_(torch.max(torch.abs(m - 3*v), torch.abs(m + 3*v)) / 2 ** (self.nbits - 1) )
         assert self.init_state == 1
+
         with torch.no_grad():
             g = 1.0 / math.sqrt(self.weight.numel() * Qp)
             # g = 1.0 / math.sqrt(self.weight.numel()) / Qp
         # g = 1.0 / math.sqrt(self.weight.numel()) / 4
+
         self.alpha.data.clamp_(min=1e-4)
+        
         # Method1:
         alpha = grad_scale(self.alpha, g)
         # w_q = round_pass((self.weight / alpha).clamp(Qn, Qp)) * alpha
@@ -317,6 +325,7 @@ class QuantAct(_ActQ):
         else:
             Qn = 0
             Qp = 2 ** self.nbits - 1
+
         with torch.no_grad():
             g = 1.0 / math.sqrt(x.numel() * Qp)
 

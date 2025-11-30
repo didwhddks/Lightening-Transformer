@@ -18,19 +18,19 @@ num_wavelength=12
 channel_spacing=0.4
 seed=0
 
-resumed_ckpt_path='./resumed_ckpt/best_checkpoint.pth'
+resumed_ckpt_path='../resumed_ckpt/deit_tiny_4bit_best_checkpoint.pth'
 
 for i in {1..1}
 do
     for input_noise_std in 0.03
     do
-        CUDA_VISIBLE_DEVICES=0 python main.py --eval \
+        CUDA_VISIBLE_DEVICES=0 python ../main.py --eval \
         --resume ${resumed_ckpt_path} \
         --model deit_tiny_patch16_224_quant \
         --drop-path 0 \
         --wbits ${wbits} \
         --abits ${abits} \
-        --data-path /home/usr1/zixuan/ImageNet/data \
+        --data-path /home/didwhddks/research/Lightening-Transformer/software_model/imagenet \
         --headwise \
         --input_noise_std ${input_noise_std} \
         --output_noise_std ${output_noise_std} \
@@ -39,7 +39,8 @@ do
         --channel_spacing ${channel_spacing} \
         --seed ${seed+$i} \
         --enable_wdm_noise \
-        --enable_linear_noise
+        --enable_linear_noise \
+        # --bit_serial
     done
 done
 

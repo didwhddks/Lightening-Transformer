@@ -213,6 +213,8 @@ def get_args_parser():
     parser.add_argument('--save_vit_params', action='store_true', help='Whether save_vit_params')
     parser.add_argument('--enable_calibration', action='store_true', help='Whether calibration')
     parser.add_argument('--restart_finetune', action='store_true', help='Whether restart fine-tune')
+
+    parser.add_argument('--bit_serial', default=False, action='store_true', help='Whether use bit-serial computation')
     
     return parser
 
@@ -230,12 +232,14 @@ def main(args):
     seed = args.seed + utils.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
-    print(seed)
+    # print(seed)
     
     cudnn.benchmark = True
 
     dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
     dataset_val, _ = build_dataset(is_train=False, args=args)
+
+    print('Number of classes:', args.nb_classes)
 
     if True:  # args.distributed:
         num_tasks = utils.get_world_size()
@@ -298,7 +302,7 @@ def main(args):
     print(f"** Enable WDM noise for coupler {args.enable_wdm_noise}")
     print(f"** Num of wavelength {args.num_wavelength}")
     print(f"** Channel spacing {args.channel_spacing}")
-    
+
     ## Note that the noise std is assumed to be 2sigma value, so we need to divide by 2 before we generate it
     if 'quant' in args.model:
         model = create_model(
@@ -319,7 +323,8 @@ def main(args):
             enable_wdm_noise=args.enable_wdm_noise,
             enable_linear_noise=args.enable_linear_noise,
             num_wavelength=args.num_wavelength,
-            channel_spacing=args.channel_spacing
+            channel_spacing=args.channel_spacing,
+            bit_serial=args.bit_serial
         )
     else:
         model = create_model(
@@ -332,7 +337,6 @@ def main(args):
             img_size=args.input_size,
         )
     
-
     if args.finetune:
         if args.finetune.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(

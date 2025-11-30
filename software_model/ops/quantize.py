@@ -52,12 +52,14 @@ class FunLSQ(torch.autograd.Function):
 
 
 def grad_scale(x, scale):
+    # y = x in forward pass, dy/dx = scale in backward pass
     y = x
     y_grad = x * scale
     return y.detach() - y_grad.detach() + y_grad
 
 
 def round_pass(x):
+    # only round x in forward pass (inference stage)
     y = x.round()
     y_grad = x
     return y.detach() - y_grad.detach() + y_grad
@@ -68,6 +70,31 @@ def clamp(x, minv, maxv):
     x = torch.minimum(x, maxv)
     x = torch.maximum(x, minv)
     return x
+
+
+def bit_serialized(x, nbits):
+    """ Convert integer quantized weights to binary representation."""
+    if not torch.is_tensor(x):
+        x = torch.tensor(x)
+
+    dim = x.dim()
+
+    x_int = x.to(torch.int32)
+    mask = (1 << nbits) - 1
+    x_int = x_int & mask
+
+    bit_idx = torch.arange(nbits, device=x.device)
+    bits01 = ((x_int.unsqueeze(-1) >> bit_idx) & 1).float()
+
+    weights = (1 << bit_idx).float().clone()
+    weights[-1] *= -1
+
+    # weights = weights.view(1, 1, nbits)
+    weights = weights.view((1,) * dim + (nbits,))
+
+    bit_serialized_x = (bits01 * weights).permute(-1, *range(dim)).contiguous()
+
+    return bit_serialized_x
 
 
 class QuantConv2d(_Conv2dQ):
@@ -121,11 +148,11 @@ class QuantConv2d(_Conv2dQ):
 
         self.alpha.data.clamp_(min=1e-4)
 
-        # Method1: 31GB GPU memory (AlexNet w4a4 bs 2048) 17min/epoch
+        # Method1: 31GB GPU memory (AlexNet w4a4 B 2048) 17min/epoch
         alpha = grad_scale(self.alpha, g)
         w_q = round_pass((self.weight / alpha).clamp(Qn, Qp)) * alpha
 
-        # Method2: 25GB GPU memory (AlexNet w4a4 bs 2048) 32min/epoch
+        # Method2: 25GB GPU memory (AlexNet w4a4 B 2048) 32min/epoch
         # w_q = FunLSQ.apply(self.weight, self.alpha, g, Qn, Qp)
 
         x = self.act(x)
@@ -146,7 +173,7 @@ class QuantConv2d(_Conv2dQ):
 class QuantLinear(_LinearQ):
     def __init__(self, in_features, out_features, bias=True, nbits=-1, nbits_a=-1, mode=Qmodes.layer_wise, offset=False, 
                  input_noise_std=0, output_noise_std=0, phase_noise_std=0, enable_wdm_noise=False, 
-                 num_wavelength=9, channel_spacing=0.4, enable_linear_noise=False, **kwargs):
+                 num_wavelength=9, channel_spacing=0.4, enable_linear_noise=False, bit_serial=False, **kwargs):
         super(QuantLinear, self).__init__(in_features=in_features, out_features=out_features, bias=bias,
                                           nbits=nbits, mode=mode)
         print(
@@ -160,6 +187,7 @@ class QuantLinear(_LinearQ):
         self.num_wavelength = num_wavelength
         self.out_features = out_features
         self.in_features = in_features
+        self.bit_serial = bit_serial
         
         if self.kappa_noise is not None:
             self.kappa_noise_term = torch.tensor(self.kappa_noise).unsqueeze(0).expand((in_features // self.num_wavelength) + 1, -1).reshape(-1).contiguous()[:in_features]
@@ -226,7 +254,17 @@ class QuantLinear(_LinearQ):
         alpha = grad_scale(self.alpha, g)
         # w_q = round_pass((self.weight / alpha).clamp(Qn, Qp)) * alpha
         # w_q = clamp(round_pass(self.weight / alpha), Qn, Qp) * alpha
-        w_q = round_pass((self.weight / alpha).clamp(Qn, Qp)) * alpha
+        # w_q = round_pass((self.weight / alpha).clamp(Qn, Qp)) * alpha
+
+        w_q = round_pass((self.weight / alpha).clamp(Qn, Qp))
+
+        if not self.training and self.bit_serial:
+            assert w_q.shape == (self.out_features, self.in_features)
+            # transform w_q to binary representation. That is, add a new dimension for bits
+            w_q = bit_serialized(w_q, self.nbits)
+            assert w_q.shape == (self.nbits, self.out_features, self.in_features)
+
+        w_q = w_q * alpha
 
         # Method2:
         # w_q = FunLSQ.apply(self.weight, self.alpha, g, Qn, Qp)
@@ -239,38 +277,65 @@ class QuantLinear(_LinearQ):
         if not self.training and self.phase_noise_std > 1e-5 and self.enable_linear_noise:
             noise_w_q_2 = 0
             noise_x_2 = 0
+
             if self.kappa_noise is not None:
                 if self.kappa_noise_term.device != x.device:
                     self.kappa_noise_term = self.kappa_noise_term.to(x.device)
                 # obtain the scaling number
                 alpha_x_to_w = self.act.alpha / alpha
-                noise_x_2 = torch.matmul(x.square(), self.kappa_noise_term.unsqueeze(-1)) /(alpha_x_to_w * kappa_noise_scale_factor) # [bs, seq, 1]
-                noise_w_q_2 = torch.matmul(w_q.square(), -self.kappa_noise_term.unsqueeze(-1))* (alpha_x_to_w / kappa_noise_scale_factor) # [output_features, 1]
+                noise_x_2 = torch.matmul(x.square(), self.kappa_noise_term.unsqueeze(-1)) / (alpha_x_to_w * kappa_noise_scale_factor) # [B, seq, 1]
+                noise_w_q_2 = torch.matmul(w_q.square(), -self.kappa_noise_term.unsqueeze(-1)) * (alpha_x_to_w / kappa_noise_scale_factor) # [nbits, output_features, 1]
+
             dim_3_flag = False
+
             if x.dim() == 3:
                 dim_3_flag = True
-                bs, N, D = x.shape
-                bs = bs * N
+                B, N, D = x.shape
+                B = B * N
                 x = x.reshape(-1, D)
             else:
-                bs, D = x.shape
+                B, D = x.shape
             
             out = []
             k = 2
-            num_chunks = self.out_features//k
+            num_chunks = self.out_features // k
             for i in range(k):
-                if self.out_features%k != 0: raise RuntimeError
+                if self.out_features % k != 0: raise RuntimeError
+                # 只加一側的原因 : 相對相位
                 noisy_x = self.add_phase_noise(x.unsqueeze(-2).expand(-1, num_chunks, -1))
-                out.append(torch.einsum('ibk, bk->ib', noisy_x, w_q[i * num_chunks: (i+1) * num_chunks, :]))
+                if self.bit_serial:
+                    out.append(torch.einsum('ibk, dbk->dib', noisy_x, w_q[:, i * num_chunks: (i+1) * num_chunks, :]))
+                else:
+                    out.append(torch.einsum('ibk, bk->ib', noisy_x, w_q[i * num_chunks: (i+1) * num_chunks, :]))
                 
-            out = torch.cat(out, 1)
-            
-            if self.bias is not None:
-                out += self.bias
-            if dim_3_flag:
-                out = out.reshape(-1, N, self.out_features)
-            out = out + (noise_x_2 + noise_w_q_2.squeeze(-1)) # add [bs, seq, 1] and [1, output_features]
+            out = torch.cat(out, 2) if self.bit_serial else torch.cat(out, 1)
+
+            if self.bit_serial:
+                assert out.shape == (self.nbits, B, self.out_features)
+
+                noise_x_2 = noise_x_2.unsqueeze(0) # [1, B, 1] or [1, B, N, 1]
+                noise_w_q_2 = noise_w_q_2.squeeze(-1).unsqueeze(1)  # [nbits, 1, output_features]
+
+                if dim_3_flag:
+                    out = out.reshape(self.nbits, -1, N, self.out_features)
+                    noise_w_q_2 = noise_w_q_2.unsqueeze(1)  # [nbits, 1, 1, output_features]
+                
+                out = out + noise_x_2 + noise_w_q_2
+                out = out.sum(dim=0)
+                
+                if self.bias is not None:
+                    out += self.bias
+            else:
+                if self.bias is not None:
+                    out += self.bias
+
+                if dim_3_flag:
+                    out = out.reshape(-1, N, self.out_features)
+
+                out = out + (noise_x_2 + noise_w_q_2.squeeze(-1)) # add [bs, seq, 1] and [1, output_features]
         else:
+            if self.bit_serial:
+                w_q = w_q.sum(dim=0)
             out = F.linear(x, w_q, self.bias)
         
         # add output noise
@@ -280,11 +345,12 @@ class QuantLinear(_LinearQ):
         return out
 
 class QuantAct(_ActQ):
-    def __init__(self, in_features, nbits=-1, signed=True, mode=Qmodes.layer_wise, input_noise_std=0, offset=False, **kwargs):
+    def __init__(self, in_features, nbits=-1, signed=True, mode=Qmodes.layer_wise, input_noise_std=0, offset=False, bit_serial=False, **kwargs):
         super(QuantAct, self).__init__(in_features=in_features,
                                        nbits=nbits, mode=mode, offset=offset)
         self.input_noise_std = input_noise_std
         self.offset = offset
+        self.bit_serial = bit_serial
 
     def add_input_noise(self, x):
         # the noise std is 2sigma not 1sigma, so should be devided by 2
@@ -319,6 +385,7 @@ class QuantAct(_ActQ):
             self.init_state.fill_(1)
 
         assert self.init_state == 1
+        
         if self.signed:
             Qn = -2 ** (self.nbits - 1)
             Qp = 2 ** (self.nbits - 1) - 1
@@ -349,7 +416,15 @@ class QuantAct(_ActQ):
             alpha = alpha.unsqueeze(0).unsqueeze(2).unsqueeze(3)
 
         x = round_pass((x / alpha + zero_point).clamp(Qn, Qp))
-        x = (x - zero_point) * alpha
+
+        if not self.training and self.bit_serial and self.signed and self.offset == False:
+            # transform x to binary representation. That is, add a new dimension for bits
+            x = bit_serialized(x, self.nbits)
+
+        if self.offset:
+            x = (x - zero_point) * alpha
+        else:
+            x = x * alpha
 
         x = self.add_input_noise(x)
 

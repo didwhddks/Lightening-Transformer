@@ -8,16 +8,19 @@ abits=8
 id=8bit
 lr=5e-4
 weight_decay=1e-8
-batch_size=512
-epochs=300
-port=47771
+# batch_size=512
+batch_size=128
+# epochs=300
+epochs=100
+# port=47771
 headwise=1
 input_noise_std=0.03
 output_noise_std=0.05
 
-torchrun \
---master_port ${port} \
---nproc_per_node=4 ../main.py \
+# torchrun \
+# --master_port ${port} \
+# --nproc_per_node=4 ../main.py \
+CUDA_VISIBLE_DEVICES=0 python ../main.py \
 --model deit_tiny_patch16_224_quant \
 --drop-path 0 \
 --batch-size ${batch_size} \

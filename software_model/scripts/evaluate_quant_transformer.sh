@@ -4,9 +4,9 @@
 # @Last Modified by:   Hanqing Zhu(hqzhu@utexas.edu)
 # @Last Modified time: 2023-11-10 16:51:54
 exp='eval_accuracy'
-wbits=4
-abits=4
-id=4bit
+wbits=8
+abits=8
+id=8bit
 headwise=1
 
 # noise settings
@@ -18,7 +18,7 @@ num_wavelength=12
 channel_spacing=0.4
 seed=0
 
-resumed_ckpt_path='../resumed_ckpt/deit_tiny_4bit_best_checkpoint.pth'
+resumed_ckpt_path='../resumed_ckpt/best_checkpoint.pth'
 
 for i in {1..1}
 do
@@ -34,13 +34,13 @@ do
         --headwise \
         --input_noise_std ${input_noise_std} \
         --output_noise_std ${output_noise_std} \
-        --phase_noise_std ${phase_noise_std} \
         --num_wavelength ${num_wavelength} \
         --channel_spacing ${channel_spacing} \
         --seed ${seed+$i} \
-        --enable_wdm_noise \
         --enable_linear_noise \
-        # --bit_serial
+        --phase_noise_std ${phase_noise_std} \
+        --enable_wdm_noise \
+        --bit_serial
     done
 done
 

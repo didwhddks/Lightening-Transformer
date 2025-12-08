@@ -261,8 +261,12 @@ class QuantLinear(_LinearQ):
         if not self.training and self.bit_serial:
             assert w_q.shape == (self.out_features, self.in_features)
             # transform w_q to binary representation. That is, add a new dimension for bits
-            w_q = bit_serialized(w_q, self.nbits)
-            assert w_q.shape == (self.nbits, self.out_features, self.in_features)
+            bit_serialized_w_q = bit_serialized(w_q, self.nbits)
+
+            assert bit_serialized_w_q.shape == (self.nbits, self.out_features, self.in_features)
+            assert torch.equal(bit_serialized_w_q.sum(dim=0), w_q)
+
+            w_q = bit_serialized_w_q
 
         w_q = w_q * alpha
 

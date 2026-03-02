@@ -53,6 +53,7 @@ class PhotonicCrossbar(PhotonicCore):
         self.act_bit = act_bit
 
         self.core_ADC_sharing_factor = 1 # whether we share ADC across outputs, multi-channel ADC
+        self.arch_bit_serial_support_factor = config.arch.bit_serial_support_factor if config is not None else 0
 
         # set work freq
         self.work_freq = config.core.work_freq if config is not None else 1  # GHz
@@ -67,9 +68,9 @@ class PhotonicCrossbar(PhotonicCore):
         self.insertion_loss_modulation = None
         self.cal_insertion_loss(print_msg=False)
         self.cal_laser_power(print_msg=False)
-        self.cal_modulator_param(print_msg=False)
+        self.cal_modulator_param(print_msg=True)
         self.cal_ADC_param(print_msg=False)
-        self.cal_DAC_param(print_msg=False)
+        self.cal_DAC_param(print_msg=True)
 
     def _initialize_params(self, config=None):
         """Initializes required devices params for Photonic dota.
@@ -79,17 +80,18 @@ class PhotonicCrossbar(PhotonicCore):
             Digital: ADC, DAC, TIA.
         """
         self._obtain_laser_param(config.device.laser)
-        self._obatin_modulator_param(config.device.mzi_modulator)
+        self._obtain_mzi_modulator_param(config.device.mzi_modulator)
         self._obtain_mrr_router_param(config.device.mrr_router)
         self._obtain_phase_shifter_param(config.device.phase_shifter)
         self._obtain_direction_coupler_param(config.device.direction_coupler)
         self._obtain_photodetector_param(config.device.photo_detector)
         self._obtain_y_branch_param(config.device.y_branch)
-        self._obtain_micro_comb_param(config.device.micro_comb)
+        self._obtain_micro_comb_param(config.device.micro_comb) # only area
 
         self._obtain_ADC_param(config.core.interface.ADC)
         self._obtain_DAC_param(config.core.interface.DAC)
         self._obtain_TIA_param(config.core.interface.TIA)
+        self._obtain_mrr_modulator_param(config.device.mrr_modulator)
     
     def set_ADC_sharing_factor(self, sharing_factor):
         self.core_ADC_sharing_factor = sharing_factor
@@ -123,14 +125,16 @@ class PhotonicCrossbar(PhotonicCore):
         # ignor grating coupler since we assume this is a on-chip laser
         # modulation insertion loss: modulator, WDM Mux and demux, splitter
         # we have a 1: N splitter based on y_branch -> log2N levels
-        self.insertion_loss_modulation = self.modulator_insertion_loss + \
+        self.insertion_loss_modulation = self.mzi_modulator_insertion_loss + \
             self.mrr_router_insertion_loss * 2 + self.y_branch_insertion_loss * \
             math.ceil(math.log2(max(self.core_height, self.core_width)))
+
         # computation insertion loss: DDOT units (1 splitter + 1 ps + 1 dc)
         self.insertion_loss_computation = self.y_branch_insertion_loss + \
             self.phase_shifter_insertion_loss + self.direction_coupler_insertion_loss
-        self.insertion_loss = self.insertion_loss_computation \
-            + self.insertion_loss_modulation
+
+        self.insertion_loss = self.insertion_loss_computation + self.insertion_loss_modulation
+
         if print_msg:
             print(
                 f"insertion loss {self.insertion_loss: .2f} db")
@@ -148,39 +152,34 @@ class PhotonicCrossbar(PhotonicCore):
         if self.insertion_loss_modulation is None or self.insertion_loss_computation is None:
             self.cal_insertion_loss()
         # the laser power is distributed to Nw, Nh waveguides
-        P_laser_dbm = self.photo_detector_sensitivity + self.insertion_loss_modulation + self.insertion_loss_computation + \
-            10 * math.log10(self.core_width * self.core_height) 
+        P_laser_dbm = self.photo_detector_sensitivity + self.insertion_loss + \
+            10 * math.log10(self.core_width * self.core_height)
+
         self.laser_power = 10 ** (P_laser_dbm / 10) / self.laser_wall_plug_eff * 2 ** self.act_bit
 
         if print_msg:
             print(f'required laser power is {self.laser_power} mW with {P_laser_dbm} db requirement')
 
-    def _obatin_modulator_param(self, config=None):
-        if config is not None:
-            self.modulator_type = config.type
-            assert self.modulator_type == 'mzi'
-            self.modulator_energy_per_bit = config.energy_per_bit
-            self.modulator_power_static = config.static_power
-            self.modulator_length = config.length
-            self.modulator_width = config.width
-            self.modulator_insertion_loss = config.insertion_loss
-        else:
-            self.modulator_energy_per_bit = 400
-            self.modulator_static_power = 0
-            self.modulator_length = 300
-            self.modulator_width = 50
-            self.modulator_insertion_loss = 0.8
-
     def cal_modulator_param(self, print_msg=False):
         # indepent to bit width
-        self.modulator_power_dynamic = self.modulator_energy_per_bit * \
+        self.mzi_modulator_power_dynamic = self.mzi_modulator_energy_per_bit * \
             self.work_freq * 1e-3  # mW
 
+        if self.arch_bit_serial_support_factor:
+            self.mrr_modulator_power_dynamic = self.mrr_modulator_energy_per_bit * \
+                self.work_freq * 1e-3  # mW
+                
         if print_msg:
             print(
-                f"modulator static power: {self.modulator_power_static: .2f} mW")
+                f"mzi modulator static power: {self.mzi_modulator_power_static: .2f} mW")
             print(
-                f"modulator dynamic power: {self.modulator_power_dynamic: .2f} mW")
+                f"mzi modulator dynamic power: {self.mzi_modulator_power_dynamic: .2f} mW")
+            
+            if self.arch_bit_serial_support_factor:
+                print(
+                    f"mrr modulator static power: {self.mrr_modulator_power_static: .2f} mW")
+                print(
+                    f"mrr modulator dynamic power: {self.mrr_modulator_power_dynamic: .2f} mW")
 
     def cal_ADC_param(self, print_msg=False):
         self.ADC.set_ADC_work_freq(self.work_freq)
@@ -191,6 +190,7 @@ class PhotonicCrossbar(PhotonicCore):
 
     def cal_DAC_param(self, print_msg=False):
         self.cal_modulator_param(print_msg=False)
+
         self.DAC.set_DAC_work_freq(self.work_freq)
         self.DAC.set_DAC_work_prec(self.in_bit)
         self.DAC.cal_DAC_param(print_msg=print_msg)
@@ -235,7 +235,7 @@ class PhotonicCrossbar(PhotonicCore):
         self.input_power_dac = (self.core_height + self.core_width) * \
             self.num_wavelength * self.core_DAC_power
         self.input_power_modulation = (self.core_height + self.core_width) * self.num_wavelength * (
-            self.modulator_power_static + self.modulator_power_dynamic + self.mrr_router_power * 2)
+            self.mzi_modulator_power_static + self.mzi_modulator_power_dynamic + self.mrr_router_power * 2)
 
         self.input_power = (
             self.input_power_laser +
@@ -264,8 +264,8 @@ class PhotonicCrossbar(PhotonicCore):
 
     def cal_TX_energy(self):
         # mzi modulator
-        self.TX_energy = ((self.modulator_power_dynamic +
-                          self.modulator_power_static + self.mrr_router_power * 2)) / self. work_freq
+        self.TX_energy = ((self.mzi_modulator_power_dynamic +
+                          self.mzi_modulator_power_static + self.mrr_router_power * 2)) / self. work_freq
         return self.TX_energy
 
     def cal_A2D_energy(self):

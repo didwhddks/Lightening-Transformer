@@ -41,20 +41,36 @@ class PhotonicCore():
         self.micro_comb_area = self.micro_comb_length * self.micro_comb_width
 
     # modulator
-    def _obtain_modulator_param(self, config=None):
+    def _obtain_mzi_modulator_param(self, config=None):
         if config is not None:
-            self.modulator_type = config.type
-            self.modulator_energy_per_bit = config.energy_per_bit
-            self.modulator_power_static = config.static_power
-            self.modulator_length = config.length
-            self.modulator_width = config.width
-            self.modulator_insertion_loss = config.insertion_loss
+            self.mzi_modulator_type = config.type
+            self.mzi_modulator_energy_per_bit = config.energy_per_bit
+            self.mzi_modulator_power_static = config.static_power
+            self.mzi_modulator_length = config.length
+            self.mzi_modulator_width = config.width
+            self.mzi_modulator_insertion_loss = config.insertion_loss
         else:
-            self.modulator_energy_per_bit = 400
-            self.modulator_static_power = 0
-            self.modulator_length = 300
-            self.modulator_width = 50
-            self.modulator_insertion_loss = 0.8
+            self.mzi_modulator_energy_per_bit = 400
+            self.mzi_modulator_power_static = 0
+            self.mzi_modulator_length = 300
+            self.mzi_modulator_width = 50
+            self.mzi_modulator_insertion_loss = 0.8
+
+    def _obtain_mrr_modulator_param(self, config=None):
+        if config is not None:
+            self.mrr_modulator_type = config.type
+            self.mrr_modulator_energy_per_bit = config.energy_per_bit
+            self.mrr_modulator_power_static = config.static_power
+            self.mrr_modulator_length = config.length
+            self.mrr_modulator_width = config.width
+            self.mrr_modulator_insertion_loss = config.insertion_loss
+            self.mrr_modulator_insertion_loss_uc = config.insertion_loss_uc
+        else:
+            self.mrr_modulator_energy_per_bit = 400
+            self.mrr_modulator_power_static = 0
+            self.mrr_modulator_length = 300
+            self.mrr_modulator_width = 50
+            self.mrr_modulator_insertion_loss = 0.8
 
     # basic devices
     def _obtain_y_branch_param(self, config=None):
@@ -134,14 +150,13 @@ class PhotonicCore():
             self.ADC = ADC(ADC_choice)
         else:
             raise NotImplementedError
-    
+
     def _obtain_DAC_param(self, config=None):
         if config is not None:
             DAC_choice = config.choice
             self.DAC = DAC(DAC_choice)
         else:
             raise NotImplementedError
-    
     
     ## calculate area, insertion loss and energy cost
     def cal_insertion_loss(self):

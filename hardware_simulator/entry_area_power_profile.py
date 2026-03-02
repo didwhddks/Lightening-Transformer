@@ -5,6 +5,7 @@
 # @Last Modified time: 2023-11-13 20:19:40
 import os
 import csv
+import math
 import logging
 import argparse
 
@@ -38,6 +39,9 @@ class areaPrediction():
         else:
             self.adc_share_flag = False
             self.input_mod_sharing_flag = False
+
+        # bit-serial support
+        self.bit_serial_support_factor = configs.arch.bit_serial_support_factor
 
         # build tensor core
         if self.core_type == "dota":
@@ -76,52 +80,86 @@ class areaPrediction():
 
     def predict_power_crossbar(self):
         power_dict = {i: [0, 0] for i in ["total", "laser", "DAC",
-                                          "MZM", "ADC", "TIA", "Photodetector", "adder", "mem"]}
+                                          "MZM", "ADC", "TIA", "Photodetector", "adder", "mem", "MRR", "MD"]}
 
-        self.hw.cal_core_power()
+        # self.hw.cal_core_power()
         ## laser power
         power_laser = self.num_pe_per_tile * self.num_tiles * self.hw.laser_power
+
+        # DAC for weight operands
+        power_DAC = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * self.hw.core_DAC_power \
+            if self.bit_serial_support_factor == 0 else 0
         
-        # MZM
-        power_MZM = self.hw.core_height * self.hw.num_wavelength * self.num_tiles * self.num_pe_per_tile * \
-            (self.hw.modulator_power_static + self.hw.modulator_power_dynamic + self.hw.mrr_router_power * 2)
+        # MZM for weight operands
+        power_MZM = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * \
+            (self.hw.mzi_modulator_power_static + self.hw.mzi_modulator_power_dynamic) \
+                if self.bit_serial_support_factor < 2 else 0
 
-        # DAC
-        power_DAC = self.hw.core_DAC_power * self.hw.core_height * \
-            self.hw.num_wavelength * self.num_tiles * self.num_pe_per_tile
+        # Micro-disk (MD) for optical channel routing (weight operands)
+        power_MD = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * \
+            self.hw.mrr_router_power * 2
 
-        if self.input_mod_sharing_flag:
-            power_MZM += (self.hw.modulator_power_static + self.hw.modulator_power_dynamic + self.hw.mrr_router_power * 2) * \
-                self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile
-            power_DAC += self.hw.core_DAC_power * self.hw.core_width * \
-                self.hw.num_wavelength * self.num_pe_per_tile
+        # Additional routing for weight operands
+        if self.bit_serial_support_factor == 2:
+            assert self.hw.num_wavelength % self.w_bit == 0
+
+            routing_factor = 2 ** (math.log2(self.w_bit) + 1) - 2
+            # routing_factor = self.w_bit
+            power_MD += self.hw.core_height * (self.hw.num_wavelength // self.w_bit) * self.num_pe_per_tile * self.num_tiles * \
+                routing_factor * self.hw.mrr_router_power
+
+        # DAC, MZM, and MD for input operands
+        if self.bit_serial_support_factor == 2:
+            power_DAC += self.hw.core_width * (self.hw.num_wavelength // self.in_bit) * self.num_pe_per_tile * \
+                (self.num_tiles if self.input_mod_sharing_flag == False else 1) * self.hw.core_DAC_power
+            power_MZM += (self.hw.mzi_modulator_power_static + self.hw.mzi_modulator_power_dynamic) * \
+                self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * (self.num_tiles if self.input_mod_sharing_flag == False else 1)
+
+            routing_factor = 2 ** (math.log2(self.in_bit) + 1) - 2
+            # routing_factor = self.in_bit
+            power_MD += self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * \
+                (self.num_tiles if self.input_mod_sharing_flag == False else 1) * self.hw.mrr_router_power * 2
+            power_MD += self.hw.core_width * (self.hw.num_wavelength // self.in_bit) * self.num_pe_per_tile * \
+                (self.num_tiles if self.input_mod_sharing_flag == False else 1) * routing_factor * self.hw.mrr_router_power
         else:
-            power_MZM += (self.hw.modulator_power_static + self.hw.modulator_power_dynamic + self.hw.mrr_router_power * 2) * \
-                self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles
-            power_DAC += self.hw.core_DAC_power * self.hw.core_width * \
-                self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles
+            power_DAC += self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * \
+                (self.num_tiles if self.input_mod_sharing_flag == False else 1) * self.hw.core_DAC_power
+            power_MZM += (self.hw.mzi_modulator_power_static + self.hw.mzi_modulator_power_dynamic) * \
+                self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * (self.num_tiles if self.input_mod_sharing_flag == False else 1)
+            power_MD += self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * \
+                (self.num_tiles if self.input_mod_sharing_flag == False else 1) * self.hw.mrr_router_power * 2
+
+        # MRR for intensity modulation
+        power_MRR = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * \
+            (self.hw.mrr_modulator_power_static + self.hw.mrr_modulator_power_dynamic) if self.bit_serial_support_factor > 0 else 0
 
         # ADC
         power_ADC = self.hw.core_ADC_power * self.hw.core_height * \
             self.hw.core_width * self.num_tiles
+
         if not self.adc_share_flag:
             power_ADC *= self.num_pe_per_tile
 
         # detection (TIA + photodetctor)
         power_photodetector = self.num_pe_per_tile * self.num_tiles * \
             self.hw.core_height * self.hw.core_width * self.hw.photo_detector_power * 2
+
         if not self.adc_share_flag:
             power_TIA = self.num_pe_per_tile * self.num_tiles * \
                 self.hw.core_height * self.hw.core_width * self.hw.TIA_power
         else:
             power_TIA = self.num_tiles * self.hw.core_height * \
                 self.hw.core_width * self.hw.TIA_power
+        
+        # if self.hw.arch_bit_serial_support_factor:
+        #     power_photodetector *= self.in_bit
+        #     power_TIA *= self.in_bit
 
         # adder
         power_adder = 0.2 / 4.39  # follow tech node scaling law
         power_adder *= self.num_tiles * self.hw.core_height * self.hw.core_width
 
-        # mem powe from CACTI
+        # mem power from CACTI
         GB_power = 315.2512 * self.num_tiles / 4 # scale when move to 8 tiles
         LB_power = 0.172725 # one 4KB LB
         buffer_power = 0.0154 # activaion buffer
@@ -139,13 +177,14 @@ class areaPrediction():
             power_memory += buffer_power * self.num_pe_per_tile
 
         power = power_laser + power_ADC + power_DAC + power_MZM + \
-            power_photodetector + power_TIA + power_memory + power_adder
+            power_photodetector + power_TIA + power_memory + power_adder + power_MRR + power_MD
 
         power_dict['total'] = [power, 1]
         power_dict['laser'] = [power_laser,
                                round(power_laser / power * 100, 2)]
         power_dict['DAC'] = [power_DAC, round(power_DAC / power * 100, 2)]
         power_dict['MZM'] = [power_MZM, round(power_MZM / power * 100, 2)]
+        power_dict['MRR'] = [power_MRR, round(power_MRR / power * 100, 2)]
         power_dict['ADC'] = [power_ADC, round(power_ADC / power * 100, 2)]
         power_dict['TIA'] = [power_TIA, round(power_TIA / power * 100, 2)]
         power_dict['Photodetector'] = [power_photodetector,
@@ -154,12 +193,14 @@ class areaPrediction():
                                round(power_adder / power * 100, 2)]
         power_dict['mem'] = [power_memory, round(
             power_memory / power * 100, 2)]
+        
+        power_dict['MD'] = [power_MD, round(power_MD / power * 100, 2)]
 
         self.power_dict = power_dict
 
     def predict_area_crossbar(self):
         area_dict = {i: [0, 0] for i in ["total", "laser", "DAC",
-                                         "MZM", "ADC", "TIA", "photonic_core", "adder", "mem"]}
+                                         "MZM", "ADC", "TIA", "photonic_core", "adder", "mem", "MRR"]}
 
         self.hw.cal_core_area()
 
@@ -381,15 +422,15 @@ class areaPrediction():
                 writer.writerow(data)
 
     def save(self, sv_name, sv_path):
-        self.__save_area_csv(os.path.join(
-            sv_path, sv_name+'_area.csv'), self.area_dict, self.core_type)
+        # self.__save_area_csv(os.path.join(
+        #     sv_path, sv_name+'_area.csv'), self.area_dict, self.core_type)
         if self.core_type == 'dota':
             self.__save_power_csv(os.path.join(
                 sv_path, sv_name+'_power.csv'), self.power_dict, 'dota')
 
     def run(self):
         if self.core_type == "dota":
-            self.predict_area_crossbar()
+            # self.predict_area_crossbar()
             self.predict_power_crossbar()
         elif self.core_type == "mzi":
             self.predict_area_mzi()
@@ -405,11 +446,19 @@ if __name__ == "__main__":
     args, opts = parser.parse_known_args()
 
     configs.load(args.config, recursive=True)
-    sv_path = f"./results/{args.exp}/{configs.core.type}_{configs.arch.num_tiles}t_{configs.arch.num_pe_per_tile}c_{configs.core.precision.in_bit}bit/"
+    sv_path = f"../results/{args.exp}/{configs.core.type}_{configs.arch.num_tiles}t_{configs.arch.num_pe_per_tile}c_{configs.core.precision.in_bit}bit"
+    
+    if configs.arch.bit_serial_support_factor == 1:
+        sv_path += f"_ori_serial"
+    elif configs.arch.bit_serial_support_factor == 2:
+        sv_path += f"_serial"
+    
+    sv_path += f"/"
+
     ensure_dir(sv_path)
     area_predictor = areaPrediction(configs=configs)
 
-    print(f"Report energy and latency estimation for {configs.core.type}_{configs.arch.num_tiles}t_{configs.arch.num_pe_per_tile}c_{configs.core.precision.in_bit}bit")
+    print(f"Report energy and latency estimation for {configs.core.type}_{configs.arch.num_tiles}t_{configs.arch.num_pe_per_tile}c_{configs.core.precision.in_bit}input_bit_{configs.core.precision.w_bit}w_bit")
     area_predictor.run()
     area_predictor.save(sv_name=configs.core.type, sv_path=sv_path)
     print(f'Finish and save report to {sv_path}')

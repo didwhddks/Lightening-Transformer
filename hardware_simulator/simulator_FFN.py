@@ -346,6 +346,7 @@ class FFNPrediction():
 
         ##### energy model for computation part
         # cal hw methods to calculate energy of each component
+        # energy cost per operation
         D2A_energy = self.hw.cal_D2A_energy()
         TX_energy = self.hw.cal_TX_energy()
         laser_energy = self.hw.cal_laser_energy()

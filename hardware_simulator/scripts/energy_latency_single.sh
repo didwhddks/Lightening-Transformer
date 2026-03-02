@@ -1,7 +1,7 @@
 exp='energy_latency_single_workload'
 model_name='deit-t'
 tokens=197
-onn_params='./params/device_params/Dota_B_4bit.yaml'
+onn_params='../params/device_params/Dota_B_4bit.yaml'
 # choose onn accelerator params from
 # config_dict=(
 #     ['dota_b_4bit']='./params/device_params/Dota_B_4bit.yaml'
@@ -15,7 +15,7 @@ onn_params='./params/device_params/Dota_B_4bit.yaml'
 # )
 
 
-python entry_energy_latency_workload.py \
+python ../entry_energy_latency_workload.py \
     -e ${exp} \
     --tokens ${tokens} \
     --model_name ${model_name} \

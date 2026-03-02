@@ -42,7 +42,7 @@ class modelParams():
         # GELU: 0.5 * x * (1 + tanh(sqrt(2 / np.pi) * (x + 0.044715 * pow(x, 3))))
         ACTIVATION_FLOPS = 8
 
-        comp_energy = (activation_ops*ACTIVATION_FLOPS + layer_norm_ops * LAYER_NORM_FLOPS + residual_ops) * 100 * 1e-12 + softmax_energy_byte * softmax_ops * bits /8
+        comp_energy = (activation_ops*ACTIVATION_FLOPS + layer_norm_ops * LAYER_NORM_FLOPS + residual_ops) * 100 * 1e-12 + softmax_energy_byte * softmax_ops * bits / 8
         datamovement_energy = (activation_ops + residual_ops + layer_norm_ops + softmax_ops) * 1.655e-9 * bits / 16 * 2
         energy = comp_energy + datamovement_energy
         

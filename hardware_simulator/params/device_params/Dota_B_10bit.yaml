@@ -20,9 +20,9 @@ core:
       power: 3
       area: 50
   precision:
-    in_bit: 4
-    w_bit: 4
-    act_bit: 4
+    in_bit: 10
+    w_bit: 10
+    act_bit: 10
 
 arch:
   num_tiles: 4
@@ -30,6 +30,6 @@ arch:
   full_range_support_factor: 1 # pe support full range or not -> 2: one operand is positive only -> 4 all operands are positive only
   ### unique arch params for our DOTA
   time_accum_factor: 3
-  input_mod_sharing_flag: 1 # whether input is globally shared cross tiles
+  input_mod_sharing_flag: 0 # whether input is globally shared cross tiles
   adc_share_flag: 1 # multiple PEs share one adc array
   bit_serial_support_factor: 2

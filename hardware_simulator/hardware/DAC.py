@@ -59,8 +59,8 @@ class DAC():
                 self.DAC_prec * self.DAC_freq * 1e-3
         else:
             # P \propto 2**N/(N+1) * f_clk
-            self.DAC_power = self.__DAC_power * (2**self.DAC_prec / (self.DAC_prec)) / (
-                2**self.__DAC_prec / (self.__DAC_prec)) * self.DAC_freq / self.__DAC_sample_rate
+            self.DAC_power = self.__DAC_power * (2**self.DAC_prec / (self.DAC_prec + 1)) / (
+                2**self.__DAC_prec / (self.__DAC_prec + 1)) * self.DAC_freq / self.__DAC_sample_rate
 
         self.DAC_area = self.__DAC_area
         

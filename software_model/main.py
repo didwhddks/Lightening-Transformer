@@ -215,6 +215,8 @@ def get_args_parser():
     parser.add_argument('--restart_finetune', action='store_true', help='Whether restart fine-tune')
 
     parser.add_argument('--bit_serial', default=False, action='store_true', help='Whether use bit-serial computation')
+    parser.add_argument('--debug_noise', default=False, action='store_true', help='Whether debug noise')
+    parser.add_argument('--accuracy_optimized', default=False, action='store_true', help='Whether use accuracy optimized bit decomposition')
     
     return parser
 
@@ -324,7 +326,9 @@ def main(args):
             enable_linear_noise=args.enable_linear_noise,
             num_wavelength=args.num_wavelength,
             channel_spacing=args.channel_spacing,
-            bit_serial=args.bit_serial
+            bit_serial=args.bit_serial,
+            debug_noise=args.debug_noise,
+            accuracy_optimized=args.accuracy_optimized
         )
     else:
         model = create_model(

@@ -7,19 +7,19 @@ import math
 
 __all__ = ["cal_coupler_wdm_error_list"]
 
-def cal_coupler_wdm_error_list(num_wavelength, channel_spacing):
-    channel_spacing = channel_spacing * 1e-3
-    error_list = [] # 2 * kappa - 1
+def coupling_length(w, g=100):
+    a = -5.44
+    b = 3.53
+    c = 0.185
+    d = 0.15
     
-    def coupling_length(w, g=100):
-        a = -5.44
-        b = 3.53
-        c = 0.185
-        d = 0.15
-        
-        L_c = (a * (w - 1.55) + b) * math.exp(g / 1000 / (c * (w - 1.55) + d))
-        
-        return L_c
+    L_c = (a * (w - 1.55) + b) * math.exp(g / 1000 / (c * (w - 1.55) + d))
+    
+    return L_c
+
+def cal_coupler_wdm_error_list(num_wavelength, channel_spacing):
+    channel_spacing = channel_spacing *1e-3
+    error_list = [] # 2 * kappa - 1
 
     odd_num_wavelength = True if num_wavelength % 2 == 1 else False
     
@@ -31,7 +31,6 @@ def cal_coupler_wdm_error_list(num_wavelength, channel_spacing):
                 wave_length = 1.55 + channel_spacing * (wave_length - (num_wavelength // 2))
             else:
                 wave_length = 1.55 + channel_spacing * (wave_length - (num_wavelength // 2) + 1)
-                
         kappa = math.sin(math.pi / 4 * coupling_length(1.55) / coupling_length(wave_length)) ** 2
         error_list.append(2 * kappa - 1)
         

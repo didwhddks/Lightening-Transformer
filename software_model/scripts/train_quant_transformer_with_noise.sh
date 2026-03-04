@@ -17,7 +17,7 @@ headwise=1
 input_noise_std=0.03
 output_noise_std=0.05
 
-resumed_ckpt="/home/didwhddks/research/Lightening-Transformer/software_model/test/deit_tiny_8bit/8w8a_bs128_baselr5e-4_weightdecay1e-8_ft100_headwise1_noise_i_0.03_o_0.05_linear_noise/best_checkpoint.pth"
+resumed_ckpt="/home/didwhddks/Lightening-Transformer/software_model/test/deit_tiny_8bit/8w8a_bs128_baselr5e-4_weightdecay1e-8_ft100_headwise1_noise_i_0.03_o_0.05_linear_noise/best_checkpoint.pth"
 
 # torchrun \
 # --master_port ${port} \
@@ -36,7 +36,7 @@ CUDA_VISIBLE_DEVICES=0 python ../main.py \
 --dist-eval \
 --output_dir ../test/deit_tiny_${id}/${wbits}w${abits}a_bs${batch_size}_baselr${lr}_weightdecay${weight_decay}_ft${epochs}_headwise${headwise}_noise_i_${input_noise_std}_o_${output_noise_std}_linear_noise \
 --resume ${resumed_ckpt} \
---data-path /home/didwhddks/research/Lightening-Transformer/software_model/imagenet \
+--data-path /home/didwhddks/Lightening-Transformer/software_model/imagenet \
 --headwise \
 --input_noise_std ${input_noise_std} \
 --output_noise_std ${output_noise_std} \

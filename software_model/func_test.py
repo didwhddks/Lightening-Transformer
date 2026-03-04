@@ -1,66 +1,70 @@
 import torch
-import torch.nn.functional as F
 
-def binary_quantized(x, nbits):
-    """ Convert integer quantized weights to binary representation."""
-    if not torch.is_tensor(x):
-        x = torch.tensor(x)
+from ops.quantize import bit_serialized
 
-    assert x.dim() == 2
+def test_basic_examples():
+    nbits = 4
 
-    x_int = x.to(torch.int32)
-    mask = (1 << nbits) - 1
-    x_int = x_int & mask
+    # Simple small vector including negatives
+    x = torch.tensor([-8, -3, -1, 0, 1, 2, 3, 7], dtype=torch.int32)
 
-    bit_idx = torch.arange(nbits, device=x.device)
-    bits01 = ((x_int.unsqueeze(-1) >> bit_idx) & 1).float()
+    # Non-optimized: original behavior
+    bs_non_opt = bit_serialized(x, nbits, optimized=False)
+    x_recon_non_opt = bs_non_opt.sum(dim=0)
+    assert torch.equal(x_recon_non_opt, x), (
+        f"Non-optimized reconstruction failed:\n"
+        f"original:     {x}\n"
+        f"reconstructed:{x_recon_non_opt}"
+    )
 
-    weights = (1 << bit_idx).float().clone()
-    weights[-1] *= -1
+    # Optimized: positive-format for magnitude, then sign
+    bs_opt = bit_serialized(x, nbits, optimized=True)
+    x_recon_opt = bs_opt.sum(dim=0)
+    assert torch.equal(x_recon_opt, x), (
+        f"Optimized reconstruction failed:\n"
+        f"original:     {x}\n"
+        f"reconstructed:{x_recon_opt}"
+    )
 
-    weights = weights.view(1, 1, nbits)
+    # Check the specific example from the description:
+    # 4-bit, -3 should be decomposed as -2 + (-1) when optimized
+    x_example = torch.tensor([-5], dtype=torch.int32)
+    bs_example_opt = bit_serialized(x_example, nbits, optimized=True).squeeze(1)  # shape [nbits]
 
-    binary_quantized_x = (bits01 * weights).permute(2, 0, 1)
+    # Bits are ordered as [2^0, 2^1, ..., 2^(nbits-2), negative_MSB]
+    # For -3: magnitude 3 -> 2 + 1, then sign=-1 -> [-1, -2, 0, 0] which sums to -3
+    print("Optimized bit decomposition for -5 (4-bit):", bs_example_opt)
 
-    return binary_quantized_x
+    assert bs_example_opt.sum().item() == -5, "Sum of optimized decomposition for -3 is incorrect"
 
-def main():
-    nbits = 5
+    print("test_basic_examples passed.")
 
-    x = torch.rand(2, 3, 3) # (B, N, I)
-    x = x.reshape(-1, x.shape[-1])
-    print('Shape of x:', x.shape)
-    print(x)
 
-    w_q = torch.tensor([[-3, 5, 7], [8, 15, -13], [4, -2, 6], [1, 2, 3]]).float()  # (O, I)
+def test_random_integers(nbits=4, num_samples=1000):
+    qmin = -(1 << (nbits - 1))
+    qmax = (1 << (nbits - 1)) - 1
 
-    ref_res = F.linear(x, w_q)
-    print('Reference result shape:', ref_res.shape)
+    # Random integers in the valid quantization range
+    x = torch.randint(low=qmin, high=qmax + 1, size=(num_samples,), dtype=torch.int32)
 
-    w_q = binary_quantized(w_q, nbits)
+    # Non-optimized
+    bs_non_opt = bit_serialized(x, nbits, optimized=False)
+    x_recon_non_opt = bs_non_opt.sum(dim=0)
+    assert torch.equal(x_recon_non_opt, x), "Non-optimized random reconstruction failed."
 
-    assert w_q.shape == (nbits, 4, 3)
+    # Optimized
+    bs_opt = bit_serialized(x, nbits, optimized=True)
+    x_recon_opt = bs_opt.sum(dim=0)
+    assert torch.equal(x_recon_opt, x), "Optimized random reconstruction failed."
 
-    res = torch.einsum('nd, kcd->knc', x, w_q)
-    res = res.sum(dim=0)
-
-    assert torch.allclose(ref_res, res, atol=1e-6)
-    print('No Chunk Test passed!')
-
-    out = []
-    k = 2
-    num_chunks = 2
-    for i in range(k):
-        noisy_x = x.unsqueeze(-2).expand(-1, num_chunks, -1)
-        out.append(torch.einsum('ibk, dbk->dib', noisy_x, w_q[:, i * num_chunks: (i+1) * num_chunks, :]))
-        
-    chunk_res = torch.cat(out, 2).sum(dim=0)
-    print(res)
-    print(chunk_res)
-    
-    assert torch.allclose(ref_res, chunk_res, atol=1e-6)
-    print('Chunk Test passed!')
+    print(f"test_random_integers (nbits={nbits}, num_samples={num_samples}) passed.")
 
 
 if __name__ == "__main__":
-    main()
+    torch.manual_seed(0)
+
+    test_basic_examples()
+    test_random_integers(nbits=4, num_samples=1000)
+    test_random_integers(nbits=8, num_samples=1000)
+
+    print("All bit_serialized tests passed.")

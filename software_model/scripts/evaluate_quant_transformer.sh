@@ -18,7 +18,7 @@ num_wavelength=12
 channel_spacing=0.4
 seed=0
 
-resumed_ckpt_path='../resumed_ckpt/best_checkpoint.pth'
+resumed_ckpt_path='../resumed_ckpt/deit_tiny_8bit_best_checkpoint.pth'
 
 for i in {1..1}
 do
@@ -30,7 +30,7 @@ do
         --drop-path 0 \
         --wbits ${wbits} \
         --abits ${abits} \
-        --data-path /home/didwhddks/research/Lightening-Transformer/software_model/imagenet \
+        --data-path /home/didwhddks/Lightening-Transformer/software_model/imagenet \
         --headwise \
         --input_noise_std ${input_noise_std} \
         --output_noise_std ${output_noise_std} \
@@ -38,9 +38,10 @@ do
         --channel_spacing ${channel_spacing} \
         --seed ${seed+$i} \
         --enable_linear_noise \
+        --bit_serial \
         --phase_noise_std ${phase_noise_std} \
         --enable_wdm_noise \
-        --bit_serial
+        --accuracy_optimized
     done
 done
 

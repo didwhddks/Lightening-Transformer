@@ -72,7 +72,7 @@ def clamp(x, minv, maxv):
     return x
 
 
-def bit_serialized(x, nbits):
+def bit_serialized(x, nbits, optimized=False):
     """ Convert integer quantized weights to binary representation."""
     if not torch.is_tensor(x):
         x = torch.tensor(x)
@@ -80,21 +80,74 @@ def bit_serialized(x, nbits):
     dim = x.dim()
 
     x_int = x.to(torch.int32)
-    mask = (1 << nbits) - 1
-    x_int = x_int & mask
 
     bit_idx = torch.arange(nbits, device=x.device)
-    bits01 = ((x_int.unsqueeze(-1) >> bit_idx) & 1).float()
 
-    weights = (1 << bit_idx).float().clone()
-    weights[-1] *= -1
+    if optimized:
+        # Use the positive-format decomposition for magnitude, then apply the sign.
+        # This represents, e.g., -3 (4-bit) as -2 + (-1) instead of -8 + 4 + 1.
+        qmin = -(1 << (nbits - 1))
+        qmax = (1 << (nbits - 1)) - 1
+        x_int = x_int.clamp(qmin, qmax)
 
-    # weights = weights.view(1, 1, nbits)
-    weights = weights.view((1,) * dim + (nbits,))
+        sign = x_int.sign().unsqueeze(-1).float()
+        x_abs = x_int.abs()
 
-    bit_serialized_x = (bits01 * weights).permute(-1, *range(dim)).contiguous()
+        bits01 = ((x_abs.unsqueeze(-1) >> bit_idx) & 1).float()
+        weights = (1 << bit_idx).float()
+
+        weights = weights.view((1,) * dim + (nbits,))
+
+        bit_serialized_x = (bits01 * weights * sign).permute(-1, *range(dim)).contiguous()
+    else:
+        # Original two's-complement-style decomposition, where the MSB carries negative weight.
+        mask = (1 << nbits) - 1
+        x_int = x_int & mask
+
+        bits01 = ((x_int.unsqueeze(-1) >> bit_idx) & 1).float()
+
+        weights = (1 << bit_idx).float().clone()
+        weights[-1] *= -1
+
+        weights = weights.view((1,) * dim + (nbits,))
+        bit_serialized_x = (bits01 * weights).permute(-1, *range(dim)).contiguous()
 
     return bit_serialized_x
+
+
+def report_noise_stats(name: str, x_before: torch.Tensor, x_after: torch.Tensor, 
+                       pos_mask: torch.Tensor, neg_mask: torch.Tensor, thresh_factor: float = 1.0):
+    """
+    針對一次加噪聲前後，分別統計 x>0 與 x<0 的誤差情況。
+
+    thresh_factor: 決定「爆掉」的標準，例如 |err| > thresh_factor * |x_before|
+    """
+    with torch.no_grad():
+        err = x_after - x_before           # 真正的 noise
+        abs_err = err.abs() # 偏移量
+        abs_x = x_before.abs().clamp_min(1e-6)
+
+        if pos_mask.any():
+            pos_mean_err = abs_err[pos_mask].mean().item()
+            pos_max_err  = abs_err[pos_mask].max().item()
+            pos_blow_mask = abs_err[pos_mask] > (thresh_factor * abs_x[pos_mask])
+            pos_blow_ratio = pos_blow_mask.float().mean().item()
+        else:
+            pos_mean_err = pos_max_err = pos_blow_ratio = 0.0
+
+        if neg_mask.any():
+            neg_mean_err = abs_err[neg_mask].mean().item()
+            neg_max_err  = abs_err[neg_mask].max().item()
+            neg_blow_mask = abs_err[neg_mask] > (thresh_factor * abs_x[neg_mask])
+            neg_blow_ratio = neg_blow_mask.float().mean().item()
+        else:
+            neg_mean_err = neg_max_err = neg_blow_ratio = 0.0
+
+        print(
+            f"[{name}] "
+            f"pos_mean={pos_mean_err:.3e}, pos_max={pos_max_err:.3e}, pos_blow={pos_blow_ratio:.6f} | "
+            f"neg_mean={neg_mean_err:.3e}, neg_max={neg_max_err:.3e}, neg_blow={neg_blow_ratio:.6f}"
+        )
 
 
 class QuantConv2d(_Conv2dQ):
@@ -173,7 +226,7 @@ class QuantConv2d(_Conv2dQ):
 class QuantLinear(_LinearQ):
     def __init__(self, in_features, out_features, bias=True, nbits=-1, nbits_a=-1, mode=Qmodes.layer_wise, offset=False, 
                  input_noise_std=0, output_noise_std=0, phase_noise_std=0, enable_wdm_noise=False, 
-                 num_wavelength=9, channel_spacing=0.4, enable_linear_noise=False, bit_serial=False, **kwargs):
+                 num_wavelength=9, channel_spacing=0.4, enable_linear_noise=False, bit_serial=False, accuracy_optimized=False, debug_noise=False, **kwargs):
         super(QuantLinear, self).__init__(in_features=in_features, out_features=out_features, bias=bias,
                                           nbits=nbits, mode=mode)
         print(
@@ -188,6 +241,8 @@ class QuantLinear(_LinearQ):
         self.out_features = out_features
         self.in_features = in_features
         self.bit_serial = bit_serial
+        self.accuracy_optimized = accuracy_optimized
+        self.debug_noise = debug_noise
         
         if self.kappa_noise is not None:
             self.kappa_noise_term = torch.tensor(self.kappa_noise).unsqueeze(0).expand((in_features // self.num_wavelength) + 1, -1).reshape(-1).contiguous()[:in_features]
@@ -258,10 +313,13 @@ class QuantLinear(_LinearQ):
 
         w_q = round_pass((self.weight / alpha).clamp(Qn, Qp))
 
+        pos_mask = w_q > 0
+        neg_mask = w_q < 0
+
         if not self.training and self.bit_serial:
             assert w_q.shape == (self.out_features, self.in_features)
             # transform w_q to binary representation. That is, add a new dimension for bits
-            bit_serialized_w_q = bit_serialized(w_q, self.nbits)
+            bit_serialized_w_q = bit_serialized(w_q, self.nbits, optimized=self.accuracy_optimized)
 
             assert bit_serialized_w_q.shape == (self.nbits, self.out_features, self.in_features)
             assert torch.equal(bit_serialized_w_q.sum(dim=0), w_q)
@@ -276,7 +334,11 @@ class QuantLinear(_LinearQ):
         
         # add noise @ w_q
         if self.enable_linear_noise and self.input_noise_std > 1e-5:
+            w_q_original = self.add_input_noise(w_q.sum(dim=0))
             w_q = self.add_input_noise(w_q)
+
+            if self.bit_serial and self.debug_noise:
+                report_noise_stats("QuantLinear w_q after input noise", w_q_original, w_q.sum(dim=0), pos_mask=pos_mask, neg_mask=neg_mask, thresh_factor=1.0)
         
         if not self.training and self.phase_noise_std > 1e-5 and self.enable_linear_noise:
             noise_w_q_2 = 0
@@ -348,13 +410,16 @@ class QuantLinear(_LinearQ):
         
         return out
 
+
 class QuantAct(_ActQ):
-    def __init__(self, in_features, nbits=-1, signed=True, mode=Qmodes.layer_wise, input_noise_std=0, offset=False, bit_serial=False, **kwargs):
+    def __init__(self, in_features, nbits=-1, signed=True, mode=Qmodes.layer_wise, input_noise_std=0, offset=False, bit_serial=False, accuracy_optimized=False, debug_noise=False, **kwargs):
         super(QuantAct, self).__init__(in_features=in_features,
                                        nbits=nbits, mode=mode, offset=offset)
         self.input_noise_std = input_noise_std
         self.offset = offset
         self.bit_serial = bit_serial
+        self.debug_noise = debug_noise
+        self.accuracy_optimized = accuracy_optimized
 
     def add_input_noise(self, x):
         # the noise std is 2sigma not 1sigma, so should be devided by 2
@@ -421,16 +486,24 @@ class QuantAct(_ActQ):
 
         x = round_pass((x / alpha + zero_point).clamp(Qn, Qp))
 
+        pos_mask = x > 0
+        neg_mask = x < 0
+
         if not self.training and self.bit_serial and self.signed and self.offset == False:
             # transform x to binary representation. That is, add a new dimension for bits
-            x = bit_serialized(x, self.nbits)
+            x = bit_serialized(x, self.nbits, optimized=self.accuracy_optimized)
 
         if self.offset:
             x = (x - zero_point) * alpha
         else:
             x = x * alpha
 
+        x_original = x
         x = self.add_input_noise(x)
+
+        if self.bit_serial and self.debug_noise:
+            x_original = self.add_input_noise(x_original.sum(dim=0))
+            report_noise_stats("QuantAct after input noise", x_original, x.sum(dim=0), pos_mask=pos_mask, neg_mask=neg_mask, thresh_factor=1.0)
 
         # Method2:
         # x = FunLSQ.apply(x, self.alpha, g, Qn, Qp)

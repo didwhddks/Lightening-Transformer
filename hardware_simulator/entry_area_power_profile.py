@@ -93,45 +93,23 @@ class areaPrediction():
         # MZM for weight operands
         power_MZM = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * \
             (self.hw.mzi_modulator_power_static + self.hw.mzi_modulator_power_dynamic) \
-                if self.bit_serial_support_factor < 2 else 0
+                if self.bit_serial_support_factor == 0 else 0
 
         # Micro-disk (MD) for optical channel routing (weight operands)
         power_MD = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * \
             self.hw.mrr_router_power * 2
 
-        # Additional routing for weight operands
-        if self.bit_serial_support_factor == 2:
-            assert self.hw.num_wavelength % self.w_bit == 0
-
-            routing_factor = 2 ** (math.log2(self.w_bit) + 1) - 2
-            # routing_factor = self.w_bit
-            power_MD += self.hw.core_height * (self.hw.num_wavelength // self.w_bit) * self.num_pe_per_tile * self.num_tiles * \
-                routing_factor * self.hw.mrr_router_power
-
         # DAC, MZM, and MD for input operands
-        if self.bit_serial_support_factor == 2:
-            power_DAC += self.hw.core_width * (self.hw.num_wavelength // self.in_bit) * self.num_pe_per_tile * \
-                (self.num_tiles if self.input_mod_sharing_flag == False else 1) * self.hw.core_DAC_power
-            power_MZM += (self.hw.mzi_modulator_power_static + self.hw.mzi_modulator_power_dynamic) * \
-                self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * (self.num_tiles if self.input_mod_sharing_flag == False else 1)
-
-            routing_factor = 2 ** (math.log2(self.in_bit) + 1) - 2
-            # routing_factor = self.in_bit
-            power_MD += self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * \
-                (self.num_tiles if self.input_mod_sharing_flag == False else 1) * self.hw.mrr_router_power * 2
-            power_MD += self.hw.core_width * (self.hw.num_wavelength // self.in_bit) * self.num_pe_per_tile * \
-                (self.num_tiles if self.input_mod_sharing_flag == False else 1) * routing_factor * self.hw.mrr_router_power
-        else:
-            power_DAC += self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * \
-                (self.num_tiles if self.input_mod_sharing_flag == False else 1) * self.hw.core_DAC_power
-            power_MZM += (self.hw.mzi_modulator_power_static + self.hw.mzi_modulator_power_dynamic) * \
-                self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * (self.num_tiles if self.input_mod_sharing_flag == False else 1)
-            power_MD += self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * \
+        power_DAC += self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * \
+            (self.num_tiles if self.input_mod_sharing_flag == False else 1) * self.hw.core_DAC_power
+        power_MZM += (self.hw.mzi_modulator_power_static + self.hw.mzi_modulator_power_dynamic) * \
+            self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * (self.num_tiles if self.input_mod_sharing_flag == False else 1)
+        power_MD += self.hw.core_width * self.hw.num_wavelength * self.num_pe_per_tile * \
                 (self.num_tiles if self.input_mod_sharing_flag == False else 1) * self.hw.mrr_router_power * 2
 
-        # MRR for intensity modulation
+        # MRR for weight intensity modulation
         power_MRR = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * \
-            (self.hw.mrr_modulator_power_static + self.hw.mrr_modulator_power_dynamic) if self.bit_serial_support_factor > 0 else 0
+            self.w_bit * (self.hw.mrr_modulator_power_static + self.hw.mrr_modulator_power_dynamic) if self.bit_serial_support_factor == 1 else 0
 
         # ADC
         power_ADC = self.hw.core_ADC_power * self.hw.core_height * \
@@ -449,7 +427,7 @@ if __name__ == "__main__":
     sv_path = f"../results/{args.exp}/{configs.core.type}_{configs.arch.num_tiles}t_{configs.arch.num_pe_per_tile}c_{configs.core.precision.in_bit}bit"
     
     if configs.arch.bit_serial_support_factor == 1:
-        sv_path += f"_ori_serial"
+        sv_path += f"_new_serial"
     elif configs.arch.bit_serial_support_factor == 2:
         sv_path += f"_serial"
     

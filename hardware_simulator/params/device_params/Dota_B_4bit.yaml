@@ -8,7 +8,7 @@ core:
   type: "dota"
   width: 12
   height: 12
-  num_wavelength: 16
+  num_wavelength: 12
   work_freq: 5
   interface:
     ADC:
@@ -32,4 +32,4 @@ arch:
   time_accum_factor: 3
   input_mod_sharing_flag: 1 # whether input is globally shared cross tiles
   adc_share_flag: 1 # multiple PEs share one adc array
-  bit_serial_support_factor: 2
+  bit_serial_support_factor: 1

@@ -8,7 +8,7 @@ core:
   type: "dota"
   width: 12
   height: 12
-  num_wavelength: 16
+  num_wavelength: 12
   work_freq: 5
   interface:
     ADC:
@@ -30,6 +30,6 @@ arch:
   full_range_support_factor: 1 # pe support full range or not -> 2: one operand is positive only -> 4 all operands are positive only
   ### unique arch params for our DOTA
   time_accum_factor: 3
-  input_mod_sharing_flag: 0 # whether input is globally shared cross tiles
+  input_mod_sharing_flag: 1 # whether input is globally shared cross tiles
   adc_share_flag: 1 # multiple PEs share one adc array
-  bit_serial_support_factor: 2
+  bit_serial_support_factor: 1

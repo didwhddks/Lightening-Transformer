@@ -38,6 +38,7 @@ class PhotonicCore():
         else:
             self.micro_comb_length = 1184
             self.micro_comb_width = 1184
+
         self.micro_comb_area = self.micro_comb_length * self.micro_comb_width
 
     # modulator
@@ -121,7 +122,6 @@ class PhotonicCore():
             self.phase_shifter_insertion_loss = 0.2
             # self.phase_shifter_programming_time = 10 # ns based on NEOM
             
-
     def _obtain_mrr_router_param(self, config=None):
         if config is not None:
             self.mrr_router_power = config.static_power

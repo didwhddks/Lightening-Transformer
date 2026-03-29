@@ -143,10 +143,11 @@ class QuantAttention(nn.Module):
         self.kappa_noise = None if not enable_wdm_noise else cal_coupler_wdm_error_list(
             num_wavelength=num_wavelength, channel_spacing=channel_spacing)
         self.num_wavelength = num_wavelength
+        self.nbits = abits
+
         self.bit_serial = bit_serial
         self.debug_noise = debug_noise
         self.accuracy_optimized = accuracy_optimized
-        self.nbits = abits
 
         # original version
         # self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)

@@ -53,6 +53,7 @@ class PhotonicCrossbar(PhotonicCore):
         self.act_bit = act_bit
 
         self.core_ADC_sharing_factor = 1 # whether we share ADC across outputs, multi-channel ADC
+        self.arch_input_mod_sharing_flag = config.arch.input_mod_sharing_flag if config is not None else 1
         self.arch_bit_serial_support_factor = config.arch.bit_serial_support_factor if config is not None else 0
 
         # set work freq
@@ -66,7 +67,7 @@ class PhotonicCrossbar(PhotonicCore):
         self.insertion_loss = None
         self.insertion_loss_computation = None
         self.insertion_loss_modulation = None
-        self.cal_insertion_loss(print_msg=False)
+        self.cal_insertion_loss(print_msg=True)
         self.cal_laser_power(print_msg=False)
         self.cal_modulator_param(print_msg=True)
         self.cal_ADC_param(print_msg=False)
@@ -120,18 +121,24 @@ class PhotonicCrossbar(PhotonicCore):
             self.cal_DAC_param()
             self.cal_modulator_param()
 
-    def cal_insertion_loss(self, print_msg=False):
+    def cal_insertion_loss(self, print_msg=True):
         "Function to compute insertion loss the most lossless path"
         # ignor grating coupler since we assume this is a on-chip laser
         # modulation insertion loss: modulator, WDM Mux and demux, splitter
         # we have a 1: N splitter based on y_branch -> log2N levels
-        self.insertion_loss_modulation = self.mzi_modulator_insertion_loss + \
-            self.mrr_router_insertion_loss * 2 + self.y_branch_insertion_loss * \
-            math.ceil(math.log2(max(self.core_height, self.core_width)))
 
-        # computation insertion loss: DDOT units (1 splitter + 1 ps + 1 dc)
-        self.insertion_loss_computation = self.y_branch_insertion_loss + \
-            self.phase_shifter_insertion_loss + self.direction_coupler_insertion_loss
+        # insertion loss for WDM MUX, WDM DEMUX, and y-branch for intra-core operand sharing
+        self.insertion_loss_modulation = self.y_branch_insertion_loss * math.ceil(math.log2(self.core_height + self.core_width)) + \
+                                            self.mrr_router_insertion_loss * 2 + self.y_branch_insertion_loss * \
+                                                math.ceil(math.log2(max(self.core_height, self.core_width)))
+
+        if self.arch_bit_serial_support_factor:
+            self.insertion_loss_modulation += self.mrr_modulator_insertion_loss + (self.w_bit - 1) * self.mrr_modulator_insertion_loss_uc + self.phase_shifter_insertion_loss
+        else:
+            self.insertion_loss_modulation += self.mzi_modulator_insertion_loss
+
+        # computation insertion loss: DDOT units (1 ps + 1 dc)
+        self.insertion_loss_computation = self.phase_shifter_insertion_loss + self.direction_coupler_insertion_loss
 
         self.insertion_loss = self.insertion_loss_computation + self.insertion_loss_modulation
 
@@ -165,21 +172,18 @@ class PhotonicCrossbar(PhotonicCore):
         self.mzi_modulator_power_dynamic = self.mzi_modulator_energy_per_bit * \
             self.work_freq * 1e-3  # mW
 
-        if self.arch_bit_serial_support_factor:
-            self.mrr_modulator_power_dynamic = self.mrr_modulator_energy_per_bit * \
-                self.work_freq * 1e-3  # mW
+        self.mrr_modulator_power_dynamic = self.mrr_modulator_energy_per_bit * \
+            self.work_freq * 1e-3  # mW
                 
         if print_msg:
             print(
                 f"mzi modulator static power: {self.mzi_modulator_power_static: .2f} mW")
             print(
                 f"mzi modulator dynamic power: {self.mzi_modulator_power_dynamic: .2f} mW")
-            
-            if self.arch_bit_serial_support_factor:
-                print(
-                    f"mrr modulator static power: {self.mrr_modulator_power_static: .2f} mW")
-                print(
-                    f"mrr modulator dynamic power: {self.mrr_modulator_power_dynamic: .2f} mW")
+            print(
+                f"mrr modulator static power: {self.mrr_modulator_power_static: .2f} mW")
+            print(
+                f"mrr modulator dynamic power: {self.mrr_modulator_power_dynamic: .2f} mW")
 
     def cal_ADC_param(self, print_msg=False):
         self.ADC.set_ADC_work_freq(self.work_freq)

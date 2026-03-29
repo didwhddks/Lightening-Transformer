@@ -30,10 +30,10 @@ FAIL=0
 
 for csv in "${CSV_LIST[@]}"; do
   dir="$(dirname "$csv")"
-  out="$dir/dota_power.png"
+  out_prefix="$dir/dota_power"
 
-  echo "[RUN] $csv -> $out"
-  if ! python3 "$PLOT_PY" "$csv" "$out"; then
+  echo "[RUN] $csv -> ${out_prefix}.png"
+  if ! python3 "$PLOT_PY" "$csv" "$out_prefix"; then
     echo "[FAIL] $csv" >&2
     FAIL=1
   fi

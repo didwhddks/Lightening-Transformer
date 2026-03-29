@@ -46,8 +46,8 @@ class ADC():
         self.ADC_freq = work_freq
     
     def set_ADC_work_prec(self, work_prec):
-        if work_prec > self.__ADC_prec:
-            raise ValueError(f"Got required ADC work precision {work_prec} exceeds the ADC precision limit")
+        # if work_prec > self.__ADC_prec:
+        #     raise ValueError(f"Got required ADC work precision {work_prec} exceeds the ADC precision limit")
         self.ADC_prec = work_prec
 
     def cal_ADC_param(self, print_msg=False):

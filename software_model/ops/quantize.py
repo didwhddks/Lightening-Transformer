@@ -152,8 +152,8 @@ def report_noise_stats(name: str, x_before: torch.Tensor, x_after: torch.Tensor,
 
 class QuantConv2d(_Conv2dQ):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-                 padding=0, dilation=1, groups=1, bias=True, nbits=-1, nbits_a=-1, mode=Qmodes.layer_wise, offset=False, 
-                 input_noise_std=0, output_noise_std=0, phase_noise_std=0, enable_wdm_noise=False, 
+                 padding=0, dilation=1, groups=1, bias=True, nbits=-1, nbits_a=-1, mode=Qmodes.layer_wise, offset=False,
+                 input_noise_std=0, output_noise_std=0, phase_noise_std=0, enable_wdm_noise=False,
                  num_wavelength=9, channel_spacing=0.4, enable_linear_noise=False, **kwargs):
         super(QuantConv2d, self).__init__(
             in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size,
@@ -162,6 +162,19 @@ class QuantConv2d(_Conv2dQ):
         self.enable_linear_noise = enable_linear_noise
         self.input_noise_std = input_noise_std if self.enable_linear_noise else 0
         self.output_noise_std = output_noise_std if self.enable_linear_noise else 0
+        self.phase_noise_std = phase_noise_std if self.enable_linear_noise else 0
+        self.num_wavelength = num_wavelength
+
+        # kappa_noise_term is indexed by filter elements: in_channels/groups * kH * kW
+        kH, kW = (kernel_size, kernel_size) if isinstance(kernel_size, int) else kernel_size
+        filter_size = (in_channels // groups) * kH * kW
+        if enable_wdm_noise and enable_linear_noise:
+            kappa_noise = cal_coupler_wdm_error_list(num_wavelength=num_wavelength, channel_spacing=channel_spacing)
+            self.kappa_noise_term = torch.tensor(kappa_noise).unsqueeze(0).expand(
+                (filter_size // num_wavelength) + 1, -1).reshape(-1).contiguous()[:filter_size]
+        else:
+            self.kappa_noise_term = None
+
         self.act = QuantAct(in_features=in_channels, nbits=nbits_a,
                             mode=Qmodes.layer_wise, offset=offset, input_noise_std=self.input_noise_std)
 
@@ -179,6 +192,13 @@ class QuantConv2d(_Conv2dQ):
             noise = torch.randn_like(x).mul(
                 (self.input_noise_std)).mul(x.data.abs())
             x = x + noise
+        return x
+
+    def add_phase_noise(self, x, noise_std):
+        # the noise std is 2sigma not 1sigma, so should be devided by 2
+        if noise_std > 1e-5:
+            noise = (torch.randn_like(x).mul_((noise_std) / 180 * np.pi)).cos_()
+            x = x * noise
         return x
 
     def forward(self, x):
@@ -209,17 +229,54 @@ class QuantConv2d(_Conv2dQ):
         # w_q = FunLSQ.apply(self.weight, self.alpha, g, Qn, Qp)
 
         x = self.act(x)
-        
-        # add noise at w_q
+
+        # input noise on w_q (training + inference)
         if self.enable_linear_noise and self.input_noise_std > 1e-5:
             w_q = self.add_input_noise(w_q)
-            
-        out = F.conv2d(x, w_q, self.bias, self.stride,
-                        self.padding, self.dilation, self.groups)
-        
+
+        # inference-only: phase noise + kappa noise
+        if not self.training and self.enable_linear_noise:
+            kappa_noise_scale_factor = 2
+
+            if self.phase_noise_std > 1e-5:
+                w_q = self.add_phase_noise(w_q, self.phase_noise_std)
+
+            if self.kappa_noise_term is not None:
+                if self.kappa_noise_term.device != x.device:
+                    self.kappa_noise_term = self.kappa_noise_term.to(x.device)
+
+                alpha_x_to_w = self.act.alpha / alpha
+
+                # unfold x to im2col layout: [B, filter_size, H_out*W_out]
+                kH, kW = self.weight.shape[2], self.weight.shape[3]
+                x_unfolded = F.unfold(x, kernel_size=(kH, kW), stride=self.stride,
+                                      padding=self.padding, dilation=self.dilation)
+
+                # noise_x_2: [B, H_out*W_out] -> [B, 1, H_out, W_out]
+                noise_x_2 = torch.mv(x_unfolded.square().transpose(1, 2).reshape(-1, x_unfolded.shape[1]),
+                                     self.kappa_noise_term)
+                B = x.shape[0]
+                out_h = (x.shape[2] + 2 * self.padding[0] - self.dilation[0] * (kH - 1) - 1) // self.stride[0] + 1
+                out_w = (x.shape[3] + 2 * self.padding[1] - self.dilation[1] * (kW - 1) - 1) // self.stride[1] + 1
+                noise_x_2 = noise_x_2.reshape(B, 1, out_h, out_w) / (alpha_x_to_w * kappa_noise_scale_factor)
+
+                # noise_w_q_2: [out_channels] -> [1, out_channels, 1, 1]
+                noise_w_q_2 = (w_q.flatten(1).square() * (-self.kappa_noise_term)).sum(dim=1)
+                noise_w_q_2 = noise_w_q_2.reshape(1, -1, 1, 1) * (alpha_x_to_w / kappa_noise_scale_factor)
+
+                out = F.conv2d(x, w_q, self.bias, self.stride,
+                               self.padding, self.dilation, self.groups)
+                out = out + noise_x_2 + noise_w_q_2
+            else:
+                out = F.conv2d(x, w_q, self.bias, self.stride,
+                               self.padding, self.dilation, self.groups)
+        else:
+            out = F.conv2d(x, w_q, self.bias, self.stride,
+                           self.padding, self.dilation, self.groups)
+
         if self.enable_linear_noise and self.output_noise_std > 1e-5:
             out = self.add_output_noise(out)
-        
+
         return out
 
 

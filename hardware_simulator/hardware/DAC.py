@@ -27,7 +27,7 @@ class DAC():
         # obtain DAC param
         self._obatin_DAC_param()
         self.DAC_freq = self.__DAC_sample_rate # set to sample rate by default
-        self.DAC_prec = self.__DAC_prec # set to sample rate by default
+        self.DAC_prec = self.__DAC_prec
     
     def _obatin_DAC_param(self):
         if self.DAC_choice is not None:
@@ -47,8 +47,8 @@ class DAC():
         self.DAC_freq = work_freq
     
     def set_DAC_work_prec(self, work_prec):
-        if work_prec > self.__DAC_prec:
-            raise ValueError(f"Got required DAC work precision {work_prec} exceeds the DAC precision limit")
+        # if work_prec > self.__DAC_prec:
+        #     raise ValueError(f"Got required DAC work precision {work_prec} exceeds the DAC precision limit")
         self.DAC_prec = work_prec
 
     def cal_DAC_param(self, print_msg=False):

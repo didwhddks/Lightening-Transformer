@@ -41,7 +41,7 @@ class areaPrediction():
             self.input_mod_sharing_flag = False
 
         # bit-serial support
-        self.bit_serial_support_factor = configs.arch.bit_serial_support_factor
+        self.bit_serial_support_factor = True if configs.arch.bit_serial_support_factor == 1 else False
 
         # build tensor core
         if self.core_type == "dota":
@@ -88,12 +88,12 @@ class areaPrediction():
 
         # DAC for weight operands
         power_DAC = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * self.hw.core_DAC_power \
-            if self.bit_serial_support_factor == 0 else 0
+            if self.bit_serial_support_factor == False else 0
         
         # MZM for weight operands
         power_MZM = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * \
             (self.hw.mzi_modulator_power_static + self.hw.mzi_modulator_power_dynamic) \
-                if self.bit_serial_support_factor == 0 else 0
+                if self.bit_serial_support_factor == False else 0
 
         # Micro-disk (MD) for optical channel routing (weight operands)
         power_MD = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * \
@@ -109,7 +109,7 @@ class areaPrediction():
 
         # MRR for weight intensity modulation
         power_MRR = self.hw.core_height * self.hw.num_wavelength * self.num_pe_per_tile * self.num_tiles * \
-            self.w_bit * (self.hw.mrr_modulator_power_static + self.hw.mrr_modulator_power_dynamic) if self.bit_serial_support_factor == 1 else 0
+            self.w_bit * (self.hw.mrr_modulator_power_static + self.hw.mrr_modulator_power_dynamic) if self.bit_serial_support_factor else 0
 
         # ADC
         power_ADC = self.hw.core_ADC_power * self.hw.core_height * \
@@ -128,10 +128,6 @@ class areaPrediction():
         else:
             power_TIA = self.num_tiles * self.hw.core_height * \
                 self.hw.core_width * self.hw.TIA_power
-        
-        # if self.hw.arch_bit_serial_support_factor:
-        #     power_photodetector *= self.in_bit
-        #     power_TIA *= self.in_bit
 
         # adder
         power_adder = 0.2 / 4.39  # follow tech node scaling law
@@ -427,8 +423,6 @@ if __name__ == "__main__":
     sv_path = f"../results/{args.exp}/{configs.core.type}_{configs.arch.num_tiles}t_{configs.arch.num_pe_per_tile}c_{configs.core.precision.in_bit}bit"
     
     if configs.arch.bit_serial_support_factor == 1:
-        sv_path += f"_new_serial"
-    elif configs.arch.bit_serial_support_factor == 2:
         sv_path += f"_serial"
     
     sv_path += f"/"
